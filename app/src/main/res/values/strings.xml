@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="blocked_navigation">This link uses a blocked URL scheme.</string>
+    <string name="local_network_required">Local network access is required to open %1$s. Grant it in Android Settings, then reopen the app.</string>
+    <string name="no_browser">No browser is available to open this link.</string>
+    <string name="no_file_picker">No system file picker is available.</string>
+    <string name="no_settings_app">Android Settings could not be opened.</string>
+    <string name="open_settings">Open settings</string>
+    <string name="tls_error">%1$s could not establish a trusted TLS connection. Check the private CA installation, certificate hostname, validity dates, and certificate chain. Validation was not bypassed.</string>
+</resources>

@@ -1,0 +1,8 @@
+services:
+  - id: example
+    component: Example
+    label: Example Service
+    url: https://example.invalid
+    icon: example
+    userCaTrust: false
+    localNetwork: false

@@ -1,0 +1,42 @@
+plugins {
+    id "com.android.application"
+}
+
+def configuredApplicationId = providers.gradleProperty("launchGlassApplicationId")
+        .getOrElse("dev.bakku.launchglass")
+
+android {
+    namespace "dev.bakku.launchglass"
+    compileSdk 37
+
+    defaultConfig {
+        applicationId configuredApplicationId
+        minSdk 26
+        targetSdk 37
+        versionCode 1
+        versionName "0.1.0"
+
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix ""
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation "androidx.activity:activity:1.13.0"
+    testImplementation "junit:junit:4.13.2"
+}
+
+apply from: rootProject.file("gradle/services.gradle")

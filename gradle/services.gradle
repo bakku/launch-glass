@@ -1,0 +1,326 @@
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+import java.net.URI
+
+def configuredServicesFile = providers.gradleProperty("servicesFile").orNull
+def sourceYaml = configuredServicesFile == null
+        ? rootProject.file("services.yaml")
+        : rootProject.file(configuredServicesFile)
+def generatorScript = rootProject.file("gradle/services.gradle")
+def applicationNamespace = android.namespace
+def applicationId = android.defaultConfig.applicationId
+def applicationIcon = providers.gradleProperty("launchGlassAppIcon").getOrElse("launch_glass")
+def applicationName = providers.gradleProperty("launchGlassAppName").getOrElse("Launch Glass")
+def generatedRoot = layout.buildDirectory.dir("generated/services").get().asFile
+def generatedJavaDirectory = new File(generatedRoot, "java")
+def generatedResourceDirectory = new File(generatedRoot, "res")
+def generatedFiles = [
+        new File(generatedRoot, "AndroidManifest.xml"),
+        new File(generatedResourceDirectory, "values/services.xml"),
+        new File(generatedResourceDirectory, "xml/network_security_config.xml"),
+        new File(generatedJavaDirectory,
+                "${applicationNamespace.replace('.', '/')}/ServiceCatalog.java"),
+]
+
+def parseScalar = { String value ->
+    if (value == "true") return true
+    if (value == "false") return false
+    if (value.startsWith('"')) return new JsonSlurper().parseText(value)
+    return value
+}
+
+def parseServices = { String text ->
+    def services = []
+    Map current = null
+    boolean foundRoot = false
+
+    text.readLines().eachWithIndex { String line, int index ->
+        if (!line.trim() || line.stripLeading().startsWith("#")) return
+        if (line == "services:") {
+            if (foundRoot) throw new GradleException("Duplicate services key at line ${index + 1}")
+            foundRoot = true
+            return
+        }
+
+        def firstProperty = line =~ /^  - ([A-Za-z][A-Za-z0-9]*):\s*(.+)$/
+        if (firstProperty.matches()) {
+            if (!foundRoot) {
+                throw new GradleException("Service entry appears before services: at line ${index + 1}")
+            }
+            current = [(firstProperty[0][1]): parseScalar(firstProperty[0][2])]
+            services.add(current)
+            return
+        }
+
+        def property = line =~ /^    ([A-Za-z][A-Za-z0-9]*):\s*(.+)$/
+        if (property.matches() && current != null) {
+            if (!foundRoot) {
+                throw new GradleException("Service property appears before services: at line ${index + 1}")
+            }
+            String key = property[0][1]
+            if (current.containsKey(key)) {
+                throw new GradleException("Duplicate ${key} at line ${index + 1}")
+            }
+            current[key] = parseScalar(property[0][2])
+            return
+        }
+
+        throw new GradleException("Unsupported YAML syntax at line ${index + 1}: ${line}")
+    }
+
+    if (!foundRoot || services.isEmpty()) {
+        throw new GradleException("services.yaml must contain at least one service")
+    }
+    return services
+}
+
+def validateServices = { List services ->
+    def required = ["id", "component", "label", "url", "icon", "userCaTrust", "localNetwork"] as Set
+    def ids = [] as Set
+    def components = [] as Set
+
+    services.each { service ->
+        required.each { key ->
+            if (!service.containsKey(key)) {
+                throw new GradleException("${service.id ?: 'Service'} is missing ${key}")
+            }
+        }
+        service.keySet().each { key ->
+            if (!required.contains(key)) {
+                throw new GradleException("${service.id} has unknown key ${key}")
+            }
+        }
+        if (!(service.id ==~ /^[a-z][a-z0-9_]*$/)) {
+            throw new GradleException("Invalid id: ${service.id}")
+        }
+        if (!(service.component ==~ /^[A-Z][A-Za-z0-9]*$/)) {
+            throw new GradleException("Invalid component: ${service.component}")
+        }
+        if (service.component == "WebAppActivity") {
+            throw new GradleException("Service component must not collide with WebAppActivity")
+        }
+        if (!(service.icon ==~ /^[a-z][a-z0-9_]*$/)) {
+            throw new GradleException("Invalid icon: ${service.icon}")
+        }
+        File adaptiveIcon = file("src/main/res/mipmap-anydpi-v26/${service.icon}.xml")
+        if (!adaptiveIcon.exists()) {
+            throw new GradleException("${service.id} icon does not exist: ${adaptiveIcon}")
+        }
+        if (!(service.label instanceof String) || !service.label.trim()) {
+            throw new GradleException("${service.id} has an invalid label")
+        }
+        if (!(service.userCaTrust instanceof Boolean)) {
+            throw new GradleException("${service.id} userCaTrust must be true or false")
+        }
+        if (!(service.localNetwork instanceof Boolean)) {
+            throw new GradleException("${service.id} localNetwork must be true or false")
+        }
+
+        URI url
+        try {
+            url = new URI(service.url)
+        } catch (Exception exception) {
+            throw new GradleException("${service.id} has an invalid URL", exception)
+        }
+        if (!url.scheme?.equalsIgnoreCase("https")) {
+            throw new GradleException("${service.id} URL must use HTTPS")
+        }
+        if (!url.host || url.userInfo) {
+            throw new GradleException("${service.id} URL must have a host and no credentials")
+        }
+        if (url.host.contains(":")) {
+            throw new GradleException("${service.id} URL must use a DNS hostname, not an IPv6 literal")
+        }
+        service.origin = "https://${url.host}${url.port == -1 ? '' : ":${url.port}"}"
+        service.host = url.host
+
+        if (!ids.add(service.id)) throw new GradleException("Duplicate id: ${service.id}")
+        if (!components.add(service.component)) {
+            throw new GradleException("Duplicate component: ${service.component}")
+        }
+    }
+}
+
+def xml = { String value ->
+    value.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&apos;")
+}
+
+def androidString = { String value ->
+    String escaped = value.replace("\\", "\\\\")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+            .replace("'", "\\'")
+            .replace('"', '\\"')
+    if (escaped.startsWith("@") || escaped.startsWith("?")) {
+        escaped = "\\${escaped}"
+    }
+    xml(escaped)
+}
+
+def javaString = { String value ->
+    JsonOutput.toJson(value)
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029")
+}
+
+def renderOutputs = {
+    List services = parseServices(sourceYaml.getText("UTF-8"))
+    validateServices(services)
+    File applicationAdaptiveIcon = file(
+            "src/main/res/mipmap-anydpi-v26/${applicationIcon}.xml")
+    if (!applicationAdaptiveIcon.exists()) {
+        throw new GradleException(
+                "Application icon does not exist: ${applicationAdaptiveIcon}")
+    }
+
+    String aliases = services.collect { service -> """        <activity-alias
+            android:name=\"${applicationId}.${service.component}\"
+            android:enabled=\"true\"
+            android:exported=\"true\"
+            android:icon=\"@mipmap/${service.icon}\"
+            android:label=\"@string/service_${service.id}_label\"
+            android:roundIcon=\"@mipmap/${service.icon}\"
+            android:targetActivity=\".WebAppActivity\">
+            <intent-filter>
+                <action android:name=\"android.intent.action.MAIN\" />
+                <category android:name=\"android.intent.category.LAUNCHER\" />
+            </intent-filter>
+        </activity-alias>""" }.join("\n\n")
+
+    String manifest = """<?xml version=\"1.0\" encoding=\"utf-8\"?>
+<!-- Generated by Gradle from services.yaml. -->
+<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\">
+
+    <uses-permission android:name=\"android.permission.INTERNET\" />
+${services.any { it.localNetwork } ? '    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />' : ''}
+
+    <application
+        android:allowBackup=\"false\"
+        android:icon=\"@mipmap/${applicationIcon}\"
+        android:label=\"@string/app_name\"
+        android:networkSecurityConfig=\"@xml/network_security_config\"
+        android:roundIcon=\"@mipmap/${applicationIcon}\"
+        android:supportsRtl=\"true\"
+        android:theme=\"@style/AppTheme\"
+        android:usesCleartextTraffic=\"false\">
+
+        <activity
+            android:name=\"${applicationNamespace}.WebAppActivity\"
+            android:exported=\"false\"
+            android:label=\"@string/app_name\"
+            android:launchMode=\"singleTask\" />
+
+${aliases}
+
+    </application>
+
+</manifest>
+"""
+
+    String labels = services.collect { service ->
+        "    <string name=\"service_${service.id}_label\" formatted=\"false\">${androidString(service.label)}</string>"
+    }.join("\n")
+    String strings = """<?xml version=\"1.0\" encoding=\"utf-8\"?>
+<!-- Generated by Gradle from services.yaml. -->
+<resources>
+    <string name=\"app_name\" formatted=\"false\">${androidString(applicationName)}</string>
+${labels}
+</resources>
+"""
+
+    def domains = services.findAll { it.userCaTrust }.collect { it.host }.unique().sort()
+    String domainConfigs = domains.collect { host -> """
+    <domain-config cleartextTrafficPermitted=\"false\">
+        <domain includeSubdomains=\"false\">${xml(host)}</domain>
+        <trust-anchors>
+            <certificates src=\"system\" />
+            <certificates src=\"user\" />
+        </trust-anchors>
+    </domain-config>""" }.join("\n")
+    String networkSecurity = """<?xml version=\"1.0\" encoding=\"utf-8\"?>
+<!-- Generated by Gradle from services.yaml. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted=\"false\">
+        <trust-anchors>
+            <certificates src=\"system\" />
+        </trust-anchors>
+    </base-config>
+${domainConfigs}
+</network-security-config>
+"""
+
+    String branches = services.collect { service -> """        if (${javaString("${applicationId}.${service.component}")}.equals(componentClassName)) {
+            return new Service(${javaString("${applicationId}.${service.component}")}, ${javaString(service.label)}, ${javaString(service.url)}, ${javaString(service.origin)}, ${service.localNetwork});
+        }""" }.join("\n")
+    String catalog = """// Generated by Gradle from services.yaml.
+package ${applicationNamespace};
+
+final class ServiceCatalog {
+    private ServiceCatalog() {}
+
+    static Service forComponent(String componentClassName) {
+${branches}
+        return null;
+    }
+
+    static final class Service {
+        final String componentClassName;
+        final String label;
+        final String startUrl;
+        final String origin;
+        final boolean localNetwork;
+
+        private Service(String componentClassName, String label, String startUrl, String origin, boolean localNetwork) {
+            this.componentClassName = componentClassName;
+            this.label = label;
+            this.startUrl = startUrl;
+            this.origin = origin;
+            this.localNetwork = localNetwork;
+        }
+    }
+}
+"""
+
+    return [
+            (generatedFiles[0]): manifest,
+            (generatedFiles[1]): strings,
+            (generatedFiles[2]): networkSecurity,
+            (generatedFiles[3]): catalog,
+    ]
+}
+
+tasks.register("generateServices") {
+    group = "build setup"
+    description = "Generates static Android service declarations from services.yaml."
+    inputs.files(sourceYaml, generatorScript)
+    inputs.property("applicationNamespace", applicationNamespace)
+    inputs.property("applicationId", applicationId)
+    inputs.property("applicationIcon", applicationIcon)
+    inputs.property("applicationName", applicationName)
+    outputs.files(generatedFiles)
+
+    doLast {
+        renderOutputs().each { File output, String content ->
+            output.parentFile.mkdirs()
+            output.setText(content, "UTF-8")
+            logger.lifecycle("Generated ${rootProject.relativePath(output)}")
+        }
+    }
+}
+
+android.sourceSets {
+    main {
+        manifest.srcFile(generatedFiles[0])
+        java.srcDir(generatedJavaDirectory)
+        res.srcDir(generatedResourceDirectory)
+    }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(tasks.named("generateServices"))
+}
