@@ -55,20 +55,6 @@ public final class WebAppActivity extends ComponentActivity {
     private boolean localNetworkRequestPending;
     private boolean showingError;
     private boolean waitingForSettings;
-    private boolean debugBuild;
-
-    private static final String INSETS_PROBE =
-            "(function(){var d=document.createElement('div');"
-            + "d.style.cssText='position:fixed;visibility:hidden;"
-            + "padding-top:env(safe-area-inset-top);"
-            + "padding-bottom:env(safe-area-inset-bottom);';"
-            + "document.body.appendChild(d);"
-            + "var e=d.getBoundingClientRect().height;d.remove();"
-            + "return JSON.stringify({env:e,inner:window.innerHeight,"
-            + "client:document.documentElement.clientHeight,"
-            + "vvH:window.visualViewport.height,"
-            + "vvY:window.visualViewport.offsetTop,"
-            + "dpr:window.devicePixelRatio});})()";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -81,7 +67,6 @@ public final class WebAppActivity extends ComponentActivity {
         setTitle(service.label);
         boolean debuggable = (getApplicationInfo().flags
                 & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
-        debugBuild = debuggable;
         WebView.setWebContentsDebuggingEnabled(debuggable);
 
         pendingState = savedInstanceState;
@@ -461,16 +446,6 @@ public final class WebAppActivity extends ComponentActivity {
                         R.string.blocked_navigation, Toast.LENGTH_LONG).show();
             }
             return true;
-        }
-
-        @Override
-        public void onPageFinished(WebView view, String url) {
-            if (debugBuild && view == webView) {
-                view.evaluateJavascript(INSETS_PROBE, result -> Toast.makeText(
-                        WebAppActivity.this,
-                        result + " viewH=" + view.getHeight(),
-                        Toast.LENGTH_LONG).show());
-            }
         }
 
         @Override
