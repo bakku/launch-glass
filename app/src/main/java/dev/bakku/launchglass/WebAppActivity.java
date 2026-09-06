@@ -151,14 +151,18 @@ public final class WebAppActivity extends ComponentActivity {
                 android.graphics.Insets insets = windowInsets.getInsets(
                         WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
                 view.setPadding(insets.left, insets.top, insets.right, insets.bottom);
+                return new WindowInsets.Builder(windowInsets)
+                        .setInsets(WindowInsets.Type.systemBars(), android.graphics.Insets.NONE)
+                        .setInsets(WindowInsets.Type.displayCutout(), android.graphics.Insets.NONE)
+                        .build();
             } else {
                 view.setPadding(
                         windowInsets.getSystemWindowInsetLeft(),
                         windowInsets.getSystemWindowInsetTop(),
                         windowInsets.getSystemWindowInsetRight(),
                         windowInsets.getSystemWindowInsetBottom());
+                return windowInsets.consumeSystemWindowInsets();
             }
-            return windowInsets;
         });
         showingError = false;
         setContentView(root);
